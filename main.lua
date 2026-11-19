@@ -18,6 +18,24 @@ local ZoteroCite = WidgetContainer:extend{
 
 function ZoteroCite:init()
     self.ui.menu:registerToMainMenu(self)
+    if self.ui.highlight then
+        self.ui.highlight:addToHighlightDialog("15_zoterocite", function(this)
+            return {
+                text = _("Add to Zotero"),
+                show_in_highlight_dialog_func = function()
+                    local text = this.selected_text.text
+                    return Doi.find(text) ~= nil or Doi.isCitation(text)
+                end,
+                callback = function()
+                    local text = this.selected_text.text
+                    local doi = Doi.find(text)
+                    this:onClose()
+                    if doi then return self:lookup(doi) end
+                    self:search(text)
+                end,
+            }
+        end)
+    end
     if not self.ui.link then return end
     self.ui.link:registerScheme("doi")
     self.ui.link:addToExternalLinkDialog("15_zoterocite", function(link_module, link_url)
@@ -64,6 +82,37 @@ function ZoteroCite:lookup(doi)
         entry.creds = creds
         entry.collection = Client.lastCollection(creds)
         self:showPreview(entry)
+    end)
+end
+
+function ZoteroCite:search(text)
+    NetworkMgr:runWhenOnline(function()
+        local matches, err = withProgress(_("Searching Crossref…"), function()
+            return Doi.search(Client, text)
+        end)
+        if not matches then return showError(T(_("Could not search Crossref:\n%1"), err)) end
+        if #matches == 0 then return showError(_("No matching reference found on Crossref.")) end
+        local dialog
+        local buttons = {}
+        for _, m in ipairs(matches) do
+            table.insert(buttons, {
+                {
+                    text = m.label,
+                    align = "left",
+                    callback = function()
+                        UIManager:close(dialog)
+                        self:lookup(m.doi)
+                    end,
+                },
+            })
+        end
+        table.insert(buttons, { { text = _("Cancel"), callback = function() UIManager:close(dialog) end } })
+        dialog = ButtonDialog:new{
+            title = _("Select reference"),
+            title_align = "center",
+            buttons = buttons,
+        }
+        UIManager:show(dialog)
     end)
 end
 

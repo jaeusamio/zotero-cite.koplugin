@@ -80,13 +80,26 @@ function Doi.extract(link)
     return doi
 end
 
-function Doi.resolve(client, doi)
-    local encoded = doi:gsub("[^%w%-%._~/:;()%[%]<>]", function(c) return string.format("%%%02X", c:byte()) end)
-    local csl, err, code = client.getJSON("https://doi.org/" .. encoded, {
-        accept = "application/vnd.citationstyles.csl+json",
-    })
-    if code == 404 then return nil, "DOI not found: " .. doi end
-    return csl, err
+function Doi.find(text)
+    local doi = util.urlDecode(text):match("10%.%d%d%d%d+/%S+")
+    if not doi then return nil end
+    doi = doi:gsub("[%.,;:'\"]+$", "")
+    -- Drop closing brackets only when unbalanced, e.g. "(doi:10.1000/xyz)."
+    while doi:match("[%)%]]$") do
+        local close = doi:sub(-1)
+        local open = close == ")" and "%(" or "%["
+        local _, opens = doi:gsub(open, "")
+        local _, closes = doi:gsub("%" .. close, "")
+        if closes <= opens then break end
+        doi = doi:sub(1, -2):gsub("[%.,;:'\"]+$", "")
+    end
+    return doi
+end
+
+function Doi.isCitation(text)
+    local _, words = text:gsub("%S+", "")
+    if words < 6 then return false end
+    return text:match("%f[%d][12][09]%d%d%f[%D]") ~= nil
 end
 
 local function date(csl)
@@ -100,6 +113,35 @@ local function date(csl)
     if month then out = out .. string.format("-%02d", month) end
     if month and day then out = out .. string.format("-%02d", day) end
     return out
+end
+
+function Doi.search(client, text)
+    local query = text:gsub("%s+", " ")
+    local data, err = client.getJSON("https://api.crossref.org/works?rows=5&select=DOI,title,author,issued"
+        .. "&query.bibliographic=" .. util.urlEncode(query))
+    if not data then return nil, err end
+    local items = type(data.message) == "table" and data.message.items
+    if type(items) ~= "table" then return nil, "Invalid Crossref response" end
+    local out = {}
+    for _, w in ipairs(items) do
+        local doi = str(w.DOI)
+        local author = type(w.author) == "table" and w.author[1]
+        local name = author and (str(author.family) or str(author.name))
+        local year = (date(w) or ""):match("^%d%d%d%d")
+        local head = table.concat({ name or "", year and "(" .. year .. ")" or "" }, " "):gsub("^ ", ""):gsub(" $", "")
+        local label = (head ~= "" and head .. ": " or "") .. (str(w.title) or doi or "")
+        if doi then table.insert(out, { doi = doi, label = label }) end
+    end
+    return out
+end
+
+function Doi.resolve(client, doi)
+    local encoded = doi:gsub("[^%w%-%._~/:;()%[%]<>]", function(c) return string.format("%%%02X", c:byte()) end)
+    local csl, err, code = client.getJSON("https://doi.org/" .. encoded, {
+        accept = "application/vnd.citationstyles.csl+json",
+    })
+    if code == 404 then return nil, "DOI not found: " .. doi end
+    return csl, err
 end
 
 local function abstract(text)
